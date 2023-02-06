@@ -22,7 +22,7 @@ val newestProfile = 21024144
 
 fun main(args: Array<String>) {
     Database.init()
-    val mostRecentProfile = Database.getLatestProfileID()
+    val mostRecentProfile = args.getOrNull(0)?.toIntOrNull() ?: Database.getLatestProfileID()
     println("Latest profile is $mostRecentProfile, starting from ${mostRecentProfile + 1}")
 
     for (i in mostRecentProfile + 1..newestProfile) {
@@ -38,7 +38,8 @@ fun getEnjinProfile(profileId: Int): EnjinProfile {
 
         val doc = try {
             Jsoup.connect("http://minecade.com/profile/$profileId/info").get()
-        } catch (e: SocketTimeoutException) {
+        } catch (e: Exception) {
+            result = Result.EXCEPTION
             return@enjinProfile
         }
 
@@ -152,5 +153,6 @@ enum class Result {
     SUCCESS,
     DEACTIVATED,
     PROFILE_ERROR,
+    EXCEPTION,
     OTHER;
 }
