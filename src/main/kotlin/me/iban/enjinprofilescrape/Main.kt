@@ -28,8 +28,7 @@ fun main(args: Array<String>) {
     for (i in mostRecentProfile + 1..newestProfile) {
         val profile = getEnjinProfile(i)
         println("Got new profile ${profile.id}, result is ${profile.result.name}")
-        println(profile.toString())
-//        Database.insertProfileOrUpdateIfExists(profile)
+        Database.insertProfileOrUpdateIfExists(profile)
     }
 }
 
