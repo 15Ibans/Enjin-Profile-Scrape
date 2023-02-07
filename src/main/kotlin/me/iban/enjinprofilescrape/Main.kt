@@ -42,7 +42,7 @@ fun main(args: Array<String>) {
 
     Database.init(host = host, port = sqlPort, user = user, pass = password)
 
-    val mostRecentProfile = System.getProperty("startProfile")?.toIntOrNull() ?: Database.getLatestProfileID()
+    val mostRecentProfile = System.getProperty("startProfile")?.toIntOrNull() ?: (Database.getLatestProfileID() + 1)
 
     if (proxies.isNotEmpty()) {
         for (proxy in proxies) {
