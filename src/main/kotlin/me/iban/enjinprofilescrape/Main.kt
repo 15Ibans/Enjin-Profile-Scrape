@@ -132,7 +132,7 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
 
         val cells = doc.select("div.cell")
         val profileViewCells = cells.first() ?: return@enjinProfile
-        val cleaned = Jsoup.clean(profileViewCells.html(), Safelist.basic())
+        val cleaned = profileViewCells.html().cleanHtml()
         profileViews = NumberFormat.getNumberInstance(Locale.US).parse(cleaned).toInt()
 
         displayName = doc.select("span.cover_header_name_text").first()?.html()
@@ -141,8 +141,8 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
         this.lastSeen = lastSeen?.let { getLastSeenTimestamp(it) } ?: this.lastSeen
 
         friends =
-            doc.select("a.friends_popup_button").first()?.html()?.trim()?.removeSuffix("Friends")?.trim()?.toIntOrNull()
-                ?: friends
+            doc.select("a.friends_popup_button").first()?.html()?.trim()
+                ?.split(" ")?.getOrNull(0)?.toIntOrNull() ?: friends
 
         val joinDateStr = doc.select("div.info_data_value").getOrNull(6)?.html()?.trim()
         if (joinDateStr != null) {
@@ -151,6 +151,8 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
             val date = monthDay.atYear(year.value)
             joinDate = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
         }
+
+        bio = doc.select("div.info_data_about_text_full").first()?.html()
 
         // also matches names with more than one _, however it's impossible for a custom url to just show two underscores
         // and if it does, well that's an interesting case
@@ -220,10 +222,11 @@ class EnjinProfile {
     var friends: Int = -1
     var lastSeen: Long = -1
     var joinDate: Long = -1
+    var bio: String? = null
     var result: Result = Result.OTHER
 
     override fun toString(): String {
-        return "id=$id,result=${result.name},profileViews=$profileViews,displayName=$displayName,quote=$quote,customURL=${customUrl},friends=$friends,lastSeen=$lastSeen,joinDate=$joinDate"
+        return "id=$id,result=${result.name},profileViews=$profileViews,displayName=$displayName,quote=$quote,customURL=${customUrl},friends=$friends,lastSeen=$lastSeen,joinDate=$joinDate,bio=$bio"
     }
 }
 

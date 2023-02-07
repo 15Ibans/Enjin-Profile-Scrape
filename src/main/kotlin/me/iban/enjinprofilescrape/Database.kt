@@ -18,6 +18,7 @@ object Database {
             ProfileViews int,
             DisplayName varchar(255),
             Quote varchar(255),
+            Bio varchar(255),
             CustomURL varchar(255),
             Friends int,
             LastSeen bigint,
@@ -33,12 +34,12 @@ object Database {
 
     private const val INSERT_ENTRY = """
         INSERT INTO $TABLE_NAME
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     private const val UPDATE_ENTRY = """
         UPDATE $TABLE_NAME
-        SET Result = ?, ProfileViews = ?, DisplayName = ?, Quote = ?, CustomURL = ?, Friends = ?, LastSeen = ?, JoinDate = ?
+        SET Result = ?, ProfileViews = ?, DisplayName = ?, Quote = ?, Bio = ?, CustomURL = ?, Friends = ?, LastSeen = ?, JoinDate = ?
         WHERE ID = ?
     """
 
@@ -94,10 +95,11 @@ object Database {
                     setInt(3, profile.profileViews)
                     setString(4, profile.displayName)
                     setString(5, profile.quote)
-                    setString(6, profile.customUrl)
-                    setInt(7, profile.friends)
-                    setLong(8, profile.lastSeen)
-                    setLong(9, profile.joinDate)
+                    setString(6, profile.bio)
+                    setString(7, profile.customUrl)
+                    setInt(8, profile.friends)
+                    setLong(9, profile.lastSeen)
+                    setLong(10, profile.joinDate)
                 }.use { it.executeUpdate() }
                 return@doSQL
             }
@@ -106,11 +108,12 @@ object Database {
                 setInt(2, profile.profileViews)
                 setString(3, profile.displayName)
                 setString(4, profile.quote)
-                setString(5, profile.customUrl)
-                setInt(6, profile.friends)
-                setLong(7, profile.lastSeen)
-                setLong(8, profile.joinDate)
-                setInt(9, profile.id)
+                setString(5, profile.bio)
+                setString(6, profile.customUrl)
+                setInt(7, profile.friends)
+                setLong(8, profile.lastSeen)
+                setLong(9, profile.joinDate)
+                setInt(10, profile.id)
             }.use { it.executeUpdate() }
         }
     }
