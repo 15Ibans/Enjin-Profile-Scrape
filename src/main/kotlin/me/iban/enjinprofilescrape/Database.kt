@@ -1,11 +1,14 @@
 package me.iban.enjinprofilescrape
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.sqlite.SQLiteDataSource
 import java.sql.Connection
+import javax.sql.DataSource
 
 object Database {
 
-    val ds = SQLiteDataSource().apply { url = "jdbc:sqlite:enjin.profiles" }
+    lateinit var ds: DataSource
 
     private const val TABLE_NAME = "profiles"
     private const val CREATE_TABLE = """
@@ -44,17 +47,41 @@ object Database {
         FROM $TABLE_NAME;
     """
 
-    fun init() {
+    fun init(host: String? = null, port: Int? = null, user: String? = null, pass: String? = null) {
+        if (host != null && port != null && user != null && pass != null) {
+            println("Information provided, using mySQL")
+            Class.forName("com.mysql.cj.jdbc.Driver")
+            val config = HikariConfig()
+            config.apply {
+                jdbcUrl = "jdbc:mysql://$host:$port/enjin?characterEncoding=latin1"
+                username = user
+                password = pass
+                maximumPoolSize = 16
+                leakDetectionThreshold = 60 * 1000
+
+                addDataSourceProperty("tcpKeepAlive", true)
+                addDataSourceProperty("cachePrepStmts", true)
+            }
+            ds = HikariDataSource(config)
+        } else {
+            ds = SQLiteDataSource().apply {
+                url = "jdbc:sqlite:enjin.profiles"
+            }
+        }
         doSQL {
             prepareStatement(CREATE_TABLE).executeUpdate()
         }
+    }
+
+    fun isInitialized(): Boolean {
+        return this::ds.isInitialized
     }
 
     fun hasProfile(profileID: Int): Boolean {
         return doSQL {
             prepareStatement(HAS_ENTRY).apply {
                 setInt(1, profileID)
-            }.executeQuery().isBeforeFirst
+            }.executeQuery().use { it.isBeforeFirst }
         }
     }
 
@@ -71,7 +98,7 @@ object Database {
                     setInt(7, profile.friends)
                     setLong(8, profile.lastSeen)
                     setLong(9, profile.joinDate)
-                }.executeUpdate()
+                }.use { it.executeUpdate() }
                 return@doSQL
             }
             prepareStatement(UPDATE_ENTRY).apply {
@@ -84,17 +111,19 @@ object Database {
                 setLong(7, profile.lastSeen)
                 setLong(8, profile.joinDate)
                 setInt(9, profile.id)
-            }.executeUpdate()
+            }.use { it.executeUpdate() }
         }
     }
 
     fun getLatestProfileID(): Int {
         return doSQL {
-            val query = prepareStatement(LATEST_PROFILE).executeQuery()
-            return if (query.next()) {
-                query.getInt(1)
-            } else {
-                0
+            val query = prepareStatement(LATEST_PROFILE).use { it.executeQuery() }
+            return query.use {
+                if (query.next()) {
+                    query.getInt(1)
+                } else {
+                    0
+                }
             }
         }
     }
@@ -102,5 +131,8 @@ object Database {
 }
 
 inline fun <R> doSQL(block: Connection.() -> R): R {
+    if (!Database.isInitialized()) {
+        throw Exception("Database is not initalized")
+    }
     return Database.ds.connection.use(block)
 }

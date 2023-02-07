@@ -2,6 +2,7 @@ package me.iban.enjinprofilescrape
 
 import org.jsoup.Jsoup
 import org.jsoup.safety.Safelist
+import org.sqlite.SQLiteDataSource
 import java.text.NumberFormat
 import java.time.*
 import java.time.format.DateTimeFormatter
@@ -24,11 +25,23 @@ val newestProfile = 21024144
 val lastProfile = AtomicInteger(-1)
 
 fun main(args: Array<String>) {
-    Database.init()
-    val mostRecentProfile = args.getOrNull(0)?.toIntOrNull() ?: Database.getLatestProfileID()
+    // -DstartProfile
+    val mostRecentProfile = System.getProperty("startProfile")?.toIntOrNull() ?: Database.getLatestProfileID()
     //proxies are in format 127.0.0.1:XXXXX,127.0.0.1:XXXXX,...
-    val proxies = args.getOrNull(1)?.split(",") ?: emptyList()
+    // -Dproxies
+    val proxies = System.getProperty("proxies")?.split(",") ?: emptyList()
     val workingProxies = mutableListOf<Proxy?>()
+
+    // -DsqlHost
+    val host = System.getProperty("sqlHost")
+    // -DsqlPort
+    val sqlPort = System.getProperty("sqlPort")?.toIntOrNull()
+    // -DsqlUser
+    val user = System.getProperty("sqlUser")
+    // -DsqlPassword
+    val password = System.getProperty("sqlPassword")
+
+    Database.init(host = host, port = sqlPort, user = user, pass = password)
 
     if (proxies.isNotEmpty()) {
         for (proxy in proxies) {
@@ -56,8 +69,8 @@ fun main(args: Array<String>) {
 
     workingProxies.add(0, null) // the first one uses user's direct connection
 
-    if (workingProxies.isNotEmpty()) {
-        // for concurrent writers
+    if (workingProxies.isNotEmpty() && Database.ds is SQLiteDataSource) {
+        // for concurrent writers on SQLite
         doSQL { prepareStatement("pragma journal_mode=wal").execute() }
     }
 
