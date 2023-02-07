@@ -2,13 +2,14 @@ package me.iban.enjinprofilescrape
 
 import org.jsoup.Jsoup
 import org.jsoup.safety.Safelist
-import java.net.SocketTimeoutException
 import java.text.NumberFormat
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 import java.util.*
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 
 val dateFormat = DateTimeFormatter.ofPattern("MMM d, yy")
     .withLocale(Locale.getDefault())
@@ -20,24 +21,88 @@ val joinDateFormat = DateTimeFormatter.ofPattern("d MMMM yyyy")
 
 val newestProfile = 21024144
 
+val lastProfile = AtomicInteger(-1)
+
 fun main(args: Array<String>) {
     Database.init()
     val mostRecentProfile = args.getOrNull(0)?.toIntOrNull() ?: Database.getLatestProfileID()
-    println("Latest profile is $mostRecentProfile, starting from ${mostRecentProfile + 1}")
+    //proxies are in format 127.0.0.1:XXXXX,127.0.0.1:XXXXX,...
+    val proxies = args.getOrNull(1)?.split(",") ?: emptyList()
+    val workingProxies = mutableListOf<Proxy?>()
 
-    for (i in mostRecentProfile + 1..newestProfile) {
-        val profile = getEnjinProfile(i)
-        println("Got new profile ${profile.id}, result is ${profile.result.name}")
-        Database.insertProfileOrUpdateIfExists(profile)
+    if (proxies.isNotEmpty()) {
+        for (proxy in proxies) {
+            var valid = false
+            print("Testing proxy $proxy... ")
+            val split = proxy.split(":")
+            if (split.size == 2) {
+                val url = split[0]
+                val port = split[1].toInt()
+
+                if (testProxy(url, port)) {
+                    workingProxies.add(Proxy(url, port))
+                    valid = true
+                }
+            }
+            println(valid)
+        }
+        println()
+    } else {
+        println("Running without proxies\n")
+    }
+
+    println("Latest profile is $mostRecentProfile, starting from ${mostRecentProfile + 1}")
+    lastProfile.set(mostRecentProfile)
+
+    workingProxies.add(0, null) // the first one uses user's direct connection
+
+    if (workingProxies.isNotEmpty()) {
+        // for concurrent writers
+        doSQL { prepareStatement("pragma journal_mode=wal").execute() }
+    }
+
+    workingProxies.forEachIndexed { index, proxy ->
+        thread {
+            while (lastProfile.get() <= newestProfile) {
+                val id = lastProfile.getAndIncrement()
+                val placeholder = EnjinProfile().apply {
+                    this.id = id
+                    result = Result.PLACEHOLDER
+                }
+                // mechanism to go back if scrape was unfinished?
+                Database.insertProfileOrUpdateIfExists(placeholder)
+
+                val profile = getEnjinProfile(id, proxy)
+                println("[THREAD $index] Got new profile ${profile.id}, result is ${profile.result.name}")
+                Database.insertProfileOrUpdateIfExists(profile)
+            }
+        }
     }
 }
 
-fun getEnjinProfile(profileId: Int): EnjinProfile {
+fun testProxy(url: String, port: Int): Boolean {
+    return try {
+        Jsoup.connect("http://minecade.com/profile/1")
+            .proxy(url, port)
+            .get()
+        true
+    } catch (e: Exception) {
+        false
+    }
+}
+
+fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
     return enjinProfile {
         id = profileId
 
         val doc = try {
-            Jsoup.connect("http://minecade.com/profile/$profileId/info").get()
+            Jsoup.connect("http://minecade.com/profile/$profileId/info")
+                .apply {
+                    if (proxy != null) {
+                        proxy(proxy.url, proxy.port)
+                    }
+                }
+                .get()
         } catch (e: Exception) {
             result = Result.EXCEPTION
             return@enjinProfile
@@ -154,5 +219,8 @@ enum class Result {
     DEACTIVATED,
     PROFILE_ERROR,
     EXCEPTION,
+    PLACEHOLDER,
     OTHER;
 }
+
+data class Proxy(val url: String, val port: Int)
