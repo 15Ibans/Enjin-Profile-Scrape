@@ -18,7 +18,7 @@ object Database {
             ProfileViews int,
             DisplayName varchar(255),
             Quote varchar(255),
-            Bio varchar(255),
+            Bio text,
             CustomURL varchar(255),
             Friends int,
             LastSeen bigint,
@@ -120,10 +120,10 @@ object Database {
 
     fun getLatestProfileID(): Int {
         return doSQL {
-            val query = prepareStatement(LATEST_PROFILE).use { it.executeQuery() }
+            val query = prepareStatement(LATEST_PROFILE).executeQuery()
             return query.use {
-                if (query.next()) {
-                    query.getInt(1)
+                if (it.next()) {
+                    it.getInt(1)
                 } else {
                     0
                 }

@@ -153,7 +153,7 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
             joinDate = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
         }
 
-        bio = doc.select("div.info_data_about_text_full").first()?.html()
+        bio = doc.select("div.info_data_about_text_full").first()?.html()?.take(65535)
 
         // also matches names with more than one _, however it's impossible for a custom url to just show two underscores
         // and if it does, well that's an interesting case
