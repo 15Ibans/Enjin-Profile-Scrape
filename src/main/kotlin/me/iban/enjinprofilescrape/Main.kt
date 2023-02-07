@@ -26,7 +26,6 @@ val lastProfile = AtomicInteger(-1)
 
 fun main(args: Array<String>) {
     // -DstartProfile
-    val mostRecentProfile = System.getProperty("startProfile")?.toIntOrNull() ?: Database.getLatestProfileID()
     //proxies are in format 127.0.0.1:XXXXX,127.0.0.1:XXXXX,...
     // -Dproxies
     val proxies = System.getProperty("proxies")?.split(",") ?: emptyList()
@@ -42,6 +41,8 @@ fun main(args: Array<String>) {
     val password = System.getProperty("sqlPassword")
 
     Database.init(host = host, port = sqlPort, user = user, pass = password)
+
+    val mostRecentProfile = System.getProperty("startProfile")?.toIntOrNull() ?: Database.getLatestProfileID()
 
     if (proxies.isNotEmpty()) {
         for (proxy in proxies) {
