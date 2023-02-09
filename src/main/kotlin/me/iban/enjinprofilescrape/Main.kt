@@ -107,7 +107,7 @@ fun main(args: Array<String>) {
         run out@ {
             proxies.forEachIndexed { index, proxy ->
                 var valid = false
-                print("(${index + 1}/${proxies.size}) Testing proxy $proxy... ")
+                print("Testing proxy ${index + 1}/${proxies.size} $proxy... ")
                 val split = proxy.split(":")
                 if (split.size == 2) {
                     val url = split[0]
@@ -244,19 +244,19 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
 
         val cells = doc.select("div.cell")
         val profileViewCells = cells.first() ?: return@enjinProfile
-        val cleaned = profileViewCells.html().cleanHtml()
+        val cleaned = profileViewCells.text().cleanHtml()
         profileViews = NumberFormat.getNumberInstance(Locale.US).parse(cleaned).toInt()
 
-        displayName = doc.select("span.cover_header_name_text").first()?.html()
-        quote = doc.select("span.cover_header_quote_text").first()?.html()
-        val lastSeen = doc.select("div.cover_header_online").first()?.html()
+        displayName = doc.select("span.cover_header_name_text").first()?.text()
+        quote = doc.select("span.cover_header_quote_text").first()?.text()
+        val lastSeen = doc.select("div.cover_header_online").first()?.text()
         this.lastSeen = lastSeen?.let { getLastSeenTimestamp(it) } ?: this.lastSeen
 
         friends =
-            doc.select("a.friends_popup_button").first()?.html()?.trim()
+            doc.select("a.friends_popup_button").first()?.text()?.trim()
                 ?.split(" ")?.getOrNull(0)?.toIntOrNull() ?: friends
 
-        val joinDateStr = doc.select("div.info_data_value").getOrNull(6)?.html()?.trim()
+        val joinDateStr = doc.select("div.info_data_value").getOrNull(6)?.text()?.trim()
         if (joinDateStr != null) {
             val monthDay = MonthDay.parse(joinDateStr, joinDateFormat)
             val year = Year.parse(joinDateStr, joinDateFormat)
@@ -264,7 +264,7 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
             joinDate = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
         }
 
-        bio = doc.select("div.info_data_about_text_full").first()?.html()?.take(65535)
+        bio = doc.select("div.info_data_about_text_full").first()?.text()?.take(65535)
 
         // also matches names with more than one _, however it's impossible for a custom url to just show two underscores
         // and if it does, well that's an interesting case
