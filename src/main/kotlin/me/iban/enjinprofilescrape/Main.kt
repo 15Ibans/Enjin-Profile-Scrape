@@ -249,6 +249,9 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
 
         displayName = doc.select("span.cover_header_name_text").first()?.text()
         quote = doc.select("input.cover_header_quote_input").first()?.attr("value")?.take(255)
+        if (quote?.isEmpty() == true) {
+            quote = doc.select("span.cover_header_quote_text").first()?.text() ?: quote
+        }
         val lastSeen = doc.select("div.cover_header_online").first()?.text()
         this.lastSeen = lastSeen?.let { getLastSeenTimestamp(it) } ?: this.lastSeen
 
