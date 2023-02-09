@@ -1,7 +1,6 @@
 package me.iban.enjinprofilescrape
 
 import org.jsoup.Jsoup
-import org.jsoup.safety.Safelist
 import org.sqlite.SQLiteDataSource
 import java.text.NumberFormat
 import java.time.*
@@ -12,15 +11,15 @@ import java.util.*
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
-val dateFormat = DateTimeFormatter.ofPattern("MMM d, yy")
+val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yy")
     .withLocale(Locale.getDefault())
     .withZone(ZoneId.systemDefault())
 
-val joinDateFormat = DateTimeFormatter.ofPattern("d MMMM yyyy")
+val joinDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMMM yyyy")
     .withLocale(Locale.getDefault())
     .withZone(ZoneId.systemDefault())
 
-val newestProfile = 21024144
+const val newestProfile = 21024144
 
 val lastProfile = AtomicInteger(-1)
 
@@ -28,7 +27,25 @@ fun main(args: Array<String>) {
     // -DstartProfile
     //proxies are in format 127.0.0.1:XXXXX,127.0.0.1:XXXXX,...
     // -Dproxies
-    val proxies = System.getProperty("proxies")?.split(",") ?: emptyList()
+    val proxies = System.getProperty("proxies")?.split(",")?.toMutableSet() ?: mutableSetOf()
+
+    // -DproxyRangeHost
+    // -DproxyRangePorts - 8888:8950
+    val proxyRangeHost = System.getProperty("proxyRangeHost")
+    val proxyRangePorts = System.getProperty("proxyRangePorts")
+    if (proxyRangeHost != null && proxyRangePorts != null) {
+        val split = proxyRangePorts.split(":").mapNotNull { it.toIntOrNull() }
+        if (split.size == 2) {
+            for (port in split[0]..split[1]) {
+                proxies.add("$proxyRangeHost:$port")
+            }
+        }
+    }
+
+    //-DmaxProxies
+    val maxProxies = System.getProperty("maxProxies")?.toIntOrNull()
+
+
     val workingProxies = mutableListOf<Proxy?>()
 
     // -DsqlHost
@@ -42,23 +59,67 @@ fun main(args: Array<String>) {
 
     Database.init(host = host, port = sqlPort, user = user, pass = password)
 
+//    val profilesWithException = doSQL {
+//        val profiles = mutableListOf<Int>()
+//        val results = prepareStatement("SELECT ID FROM profiles WHERE RESULT = 'EXCEPTION'").executeQuery()
+//        while (results.next()) {
+//            profiles.add(results.getInt(1))
+//        }
+//        profiles
+//    }
+//
+//    if (profilesWithException.isNotEmpty()) {
+//        println("${profilesWithException.size} profiles have run with exceptions, running them again!")
+//        profilesWithException.forEachIndexed { index, profileID ->
+//            val profile = getEnjinProfile(profileID)
+//            println("(${index + 1}/${profilesWithException.size}) Got profile ${profile.id}, result is ${profile.result.name}")
+//            Database.insertProfileOrUpdateIfExists(profile)
+//        }
+//    }
+
+    val uncompletedProfiles = doSQL {
+        val profiles = mutableListOf<Int>()
+        val results = prepareStatement("SELECT ID FROM profiles WHERE RESULT = 'PLACEHOLDER'").executeQuery()
+        while (results.next()) {
+            profiles.add(results.getInt(1))
+        }
+        profiles
+    }
+    if (uncompletedProfiles.isNotEmpty()) {
+        println("Found ${uncompletedProfiles.size} incomplete profiles, completing them right now...")
+        uncompletedProfiles.forEachIndexed { index, profileID ->
+            getProfileAndUploadToDB(profileId = profileID, proxy = null, usePlaceholder = false, prefix = "(${index + 1}/${uncompletedProfiles.size})")
+        }
+    }
+
     val mostRecentProfile = System.getProperty("startProfile")?.toIntOrNull() ?: (Database.getLatestProfileID() + 1)
 
     if (proxies.isNotEmpty()) {
-        for (proxy in proxies) {
-            var valid = false
-            print("Testing proxy $proxy... ")
-            val split = proxy.split(":")
-            if (split.size == 2) {
-                val url = split[0]
-                val port = split[1].toInt()
+        run out@ {
+            proxies.forEachIndexed { index, proxy ->
+                var valid = false
+                print("(${index + 1}/${proxies.size}) Testing proxy $proxy... ")
+                val split = proxy.split(":")
+                if (split.size == 2) {
+                    val url = split[0]
+                    val port = split[1].toInt()
 
-                if (testProxy(url, port)) {
-                    workingProxies.add(Proxy(url, port))
-                    valid = true
+                    if (testProxy(url, port)) {
+                        workingProxies.add(Proxy(url, port))
+                        valid = true
+                    }
+                }
+                println(valid)
+                // max proxies hit
+                if (maxProxies != null && workingProxies.size >= maxProxies) {
+                    return@out
                 }
             }
-            println(valid)
+        }
+        if (maxProxies != null) {
+            println("Target proxy size is $maxProxies, obtained ${workingProxies.size} working proxies")
+        } else {
+            println("${workingProxies.size}/${proxies.size} proxies are working")
         }
         println()
     } else {
@@ -79,19 +140,30 @@ fun main(args: Array<String>) {
         thread {
             while (lastProfile.get() <= newestProfile) {
                 val id = lastProfile.getAndIncrement()
-                val placeholder = EnjinProfile().apply {
-                    this.id = id
-                    result = Result.PLACEHOLDER
-                }
-                // mechanism to go back if scrape was unfinished?
-                Database.insertProfileOrUpdateIfExists(placeholder)
-
-                val profile = getEnjinProfile(id, proxy)
-                println("[THREAD $index] Got new profile ${profile.id}, result is ${profile.result.name}")
-                Database.insertProfileOrUpdateIfExists(profile)
+                getProfileAndUploadToDB(profileId = id, proxy = proxy, usePlaceholder = true, prefix = "[THREAD $index]")
             }
         }
     }
+}
+
+fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder: Boolean = true, prefix: String? = null) {
+    if (usePlaceholder) {
+        // mechanism to go back if scrape was unfinished?
+        val placeholder = EnjinProfile().apply {
+            id = profileId
+            result = Result.PLACEHOLDER
+        }
+        Database.insertProfileOrUpdateIfExists(placeholder)
+    }
+
+    val profile = getEnjinProfile(profileId, proxy)
+    println(buildString {
+        if (prefix != null) {
+            append("$prefix \t")
+        }
+        append("Got profile ${profile.id}, result is ${profile.result.name}")
+    })
+    Database.insertProfileOrUpdateIfExists(profile)
 }
 
 fun testProxy(url: String, port: Int): Boolean {
