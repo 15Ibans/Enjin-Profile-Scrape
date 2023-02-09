@@ -2,13 +2,16 @@ package me.iban.enjinprofilescrape
 
 import org.jsoup.Jsoup
 import org.sqlite.SQLiteDataSource
+import java.sql.PreparedStatement
 import java.text.NumberFormat
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yy")
@@ -22,6 +25,12 @@ val joinDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("d MMMM yyyy
 const val newestProfile = 21024144
 
 val lastProfile = AtomicInteger(-1)
+
+// honestly idk if this *has* to be atomic
+val lastUploadTime = AtomicLong(-1)
+const val DELAY = 1000 * 30L
+
+val queue = ConcurrentLinkedQueue<EnjinProfile>()
 
 fun main(args: Array<String>) {
     // -DstartProfile
@@ -61,7 +70,7 @@ fun main(args: Array<String>) {
 
 //    val profilesWithException = doSQL {
 //        val profiles = mutableListOf<Int>()
-//        val results = prepareStatement("SELECT ID FROM profiles WHERE RESULT = 'EXCEPTION'").executeQuery()
+//        val results = prepareStatement("SELECT ID FROM ${Database.TABLE_NAME} WHERE RESULT = 'EXCEPTION'").executeQuery()
 //        while (results.next()) {
 //            profiles.add(results.getInt(1))
 //        }
@@ -79,7 +88,7 @@ fun main(args: Array<String>) {
 
     val uncompletedProfiles = doSQL {
         val profiles = mutableListOf<Int>()
-        val results = prepareStatement("SELECT ID FROM profiles WHERE RESULT = 'PLACEHOLDER'").executeQuery()
+        val results = prepareStatement("SELECT ID FROM ${Database.TABLE_NAME} WHERE RESULT = 'PLACEHOLDER'").executeQuery()
         while (results.next()) {
             profiles.add(results.getInt(1))
         }
@@ -126,10 +135,14 @@ fun main(args: Array<String>) {
         println("Running without proxies\n")
     }
 
+    lastUploadTime.set(System.currentTimeMillis())
+
     println("Latest profile is $mostRecentProfile, starting from ${mostRecentProfile + 1}")
     lastProfile.set(mostRecentProfile)
 
-    workingProxies.add(0, null) // the first one uses user's direct connection
+    if (System.getProperty("useDirect")?.toBoolean() == true) {
+        workingProxies.add(0, null) // the first one uses user's direct connection
+    }
 
     if (workingProxies.isNotEmpty() && Database.ds is SQLiteDataSource) {
         // for concurrent writers on SQLite
@@ -146,6 +159,30 @@ fun main(args: Array<String>) {
     }
 }
 
+
+fun addToWaitingProfilesOrUpload(profile: EnjinProfile, forceUpload: Boolean = false) {
+    queue.add(profile)
+    val time = System.currentTimeMillis()
+    if (forceUpload || System.currentTimeMillis() >= lastUploadTime.get() + DELAY) {
+        lastUploadTime.set(time)
+        val toProcess = queue.toTypedArray()
+        queue.clear()
+        var statement: PreparedStatement? = null
+        doSQL {
+            autoCommit = false
+            toProcess.forEach { profile ->
+                statement = Database.insertProfileOrUpdateIfExists(profile, this, statement)
+            }
+            statement?.let {
+                it.executeBatch()
+                commit()
+                val amount = toProcess.distinctBy { profile -> profile.id }.size
+                println("Saved $amount different profiles")
+            }
+        }
+    }
+}
+
 fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder: Boolean = true, prefix: String? = null) {
     if (usePlaceholder) {
         // mechanism to go back if scrape was unfinished?
@@ -153,7 +190,8 @@ fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder
             id = profileId
             result = Result.PLACEHOLDER
         }
-        Database.insertProfileOrUpdateIfExists(placeholder)
+//        Database.insertProfileOrUpdateIfExists(placeholder)
+        addToWaitingProfilesOrUpload(placeholder)
     }
 
     val profile = getEnjinProfile(profileId, proxy)
@@ -163,7 +201,8 @@ fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder
         }
         append("Got profile ${profile.id}, result is ${profile.result.name}")
     })
-    Database.insertProfileOrUpdateIfExists(profile)
+//    Database.insertProfileOrUpdateIfExists(profile)
+    addToWaitingProfilesOrUpload(profile)
 }
 
 fun testProxy(url: String, port: Int): Boolean {

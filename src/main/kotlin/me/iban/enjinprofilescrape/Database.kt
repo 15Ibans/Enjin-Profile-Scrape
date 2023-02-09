@@ -4,13 +4,14 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.sqlite.SQLiteDataSource
 import java.sql.Connection
+import java.sql.PreparedStatement
 import javax.sql.DataSource
 
 object Database {
 
     lateinit var ds: DataSource
 
-    private const val TABLE_NAME = "profiles"
+    const val TABLE_NAME = "profiles"
     private const val CREATE_TABLE = """
         CREATE TABLE IF NOT EXISTS $TABLE_NAME (
             ID int,
@@ -41,6 +42,11 @@ object Database {
         UPDATE $TABLE_NAME
         SET Result = ?, ProfileViews = ?, DisplayName = ?, Quote = ?, Bio = ?, CustomURL = ?, Friends = ?, LastSeen = ?, JoinDate = ?
         WHERE ID = ?
+    """
+
+    private const val INSERT_OR_UPDATE = """
+        INSERT INTO $TABLE_NAME VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE Result = VALUES(Result), ProfileViews = VALUES(ProfileViews), DisplayName = VALUES(DisplayName), Quote = VALUES(Quote), Bio = VALUES(Bio), CustomURL = VALUES(CustomURL), Friends = VALUES(Friends), LastSeen = VALUES(LastSeen), JoinDate = VALUES(JoinDate) 
     """
 
     private const val LATEST_PROFILE = """
@@ -116,6 +122,26 @@ object Database {
                 setInt(10, profile.id)
             }.use { it.executeUpdate() }
         }
+    }
+
+    fun insertProfileOrUpdateIfExists(profile: EnjinProfile, connection: Connection, statement: PreparedStatement?): PreparedStatement {
+        val addBatchStatement: PreparedStatement.() -> PreparedStatement = {
+            setInt(1, profile.id)
+            setString(2, profile.result.name)
+            setInt(3, profile.profileViews)
+            setString(4, profile.displayName)
+            setString(5, profile.quote)
+            setString(6, profile.bio)
+            setString(7, profile.customUrl)
+            setInt(8, profile.friends)
+            setLong(9, profile.lastSeen)
+            setLong(10, profile.joinDate)
+
+            addBatch()
+
+            this
+        }
+        return statement?.addBatchStatement() ?: connection.prepareStatement(INSERT_OR_UPDATE).addBatchStatement()
     }
 
     fun getLatestProfileID(): Int {
