@@ -2,6 +2,8 @@ package me.iban.enjinprofilescrape
 
 import org.jsoup.Jsoup
 import org.sqlite.SQLiteDataSource
+import java.net.InetSocketAddress
+import java.net.Proxy
 import java.sql.PreparedStatement
 import java.text.NumberFormat
 import java.time.*
@@ -33,10 +35,19 @@ const val DELAY = 1000 * 30L
 
 val queue = ConcurrentLinkedQueue<EnjinProfile>()
 
+var debug = false
+
+fun printlnOnDebug(str: String) {
+    if (debug) println(str)
+}
+
 fun main(args: Array<String>) {
     // -DstartProfile
     //proxies are in format 127.0.0.1:XXXXX,127.0.0.1:XXXXX,...
     // -Dproxies
+    debug = args.contains("debug")
+    printlnOnDebug("Running in debug mode!")
+
     val proxies = System.getProperty("proxies")?.split(",")?.toMutableSet() ?: mutableSetOf()
 
     // -DproxyRangeHost
@@ -114,8 +125,13 @@ fun main(args: Array<String>) {
                     val url = split[0]
                     val port = split[1].toInt()
 
-                    if (testProxy(url, port)) {
-                        workingProxies.add(Proxy(url, port))
+                    val httpProxy = Proxy(Proxy.Type.HTTP, InetSocketAddress(url, port))
+                    val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(url, port))
+                    if (testProxy(httpProxy)) {     // test http proxy first
+                        workingProxies.add(httpProxy)
+                        valid = true
+                    } else if (testProxy(socksProxy)) {
+                        workingProxies.add(socksProxy)
                         valid = true
                     }
                 }
@@ -163,6 +179,7 @@ fun main(args: Array<String>) {
                 }
                 if (exceptionCounter >= 10) {
                     println("Thread $index got 10 exceptions in a row, sleeping for 30 minutes")
+                    exceptionCounter = 0
                     Thread.sleep(TimeUnit.MILLISECONDS.toMinutes(30))
                 }
             }
@@ -188,7 +205,14 @@ fun addToWaitingProfilesOrUpload(profile: EnjinProfile, forceUpload: Boolean = f
                 it.executeBatch()
                 commit()
                 val amount = toProcess.distinctBy { profile -> profile.id }.size
-                println("Saved $amount different profiles")
+                println(buildString {
+                    append("Saved $amount different profiles")
+                    if (amount > 0) {
+                        val min = toProcess.minOf { profile -> profile.id }
+                        val max = toProcess.maxOf { profile -> profile.id }
+                        append(" ($min -> $max)")
+                    }
+                })
             }
         }
     }
@@ -211,7 +235,7 @@ fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder
     }
 
     val profile = getEnjinProfile(profileId, proxy)
-    println(buildString {
+    printlnOnDebug(buildString {
         if (prefix != null) {
             append("$prefix \t")
         }
@@ -222,10 +246,10 @@ fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder
     return profile.result != Result.EXCEPTION
 }
 
-fun testProxy(url: String, port: Int): Boolean {
+fun testProxy(proxy: Proxy): Boolean {
     return try {
         Jsoup.connect("http://minecade.com/profile/1")
-            .proxy(url, port)
+            .proxy(proxy)
             .get()
         true
     } catch (e: Exception) {
@@ -241,7 +265,7 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
             Jsoup.connect("http://minecade.com/profile/$profileId/info")
                 .apply {
                     if (proxy != null) {
-                        proxy(proxy.url, proxy.port)
+                        this.proxy(proxy)
                     }
                 }
                 .get()
@@ -373,5 +397,3 @@ enum class Result {
     PLACEHOLDER,
     OTHER;
 }
-
-data class Proxy(val url: String, val port: Int)
