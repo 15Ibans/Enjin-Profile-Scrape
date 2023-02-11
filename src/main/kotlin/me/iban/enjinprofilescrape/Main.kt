@@ -10,6 +10,7 @@ import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
@@ -151,9 +152,19 @@ fun main(args: Array<String>) {
 
     workingProxies.forEachIndexed { index, proxy ->
         thread {
+            var exceptionCounter = 0    // if this reaches 10 (errors in a row), make the thread sleep for half an hour
             while (lastProfile.get() <= newestProfile) {
                 val id = lastProfile.getAndIncrement()
-                getProfileAndUploadToDB(profileId = id, proxy = proxy, usePlaceholder = true, prefix = "[THREAD $index]")
+                val isSuccessful = getProfileAndUploadToDB(profileId = id, proxy = proxy, usePlaceholder = true, prefix = "[THREAD $index]")
+                if (isSuccessful) {
+                    exceptionCounter = 0
+                } else {
+                    exceptionCounter++
+                }
+                if (exceptionCounter >= 10) {
+                    println("Thread $index got 10 exceptions in a row, sleeping for 30 minutes")
+                    Thread.sleep(TimeUnit.MILLISECONDS.toMinutes(30))
+                }
             }
         }
     }
@@ -183,7 +194,12 @@ fun addToWaitingProfilesOrUpload(profile: EnjinProfile, forceUpload: Boolean = f
     }
 }
 
-fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder: Boolean = true, prefix: String? = null) {
+/**
+ * Retrieves information for an Enjin profile and places it in a queue to be placed in the database
+ *
+ * @return Whether the result was successful (no exceptions generated)
+ */
+fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder: Boolean = true, prefix: String? = null): Boolean {
     if (usePlaceholder) {
         // mechanism to go back if scrape was unfinished?
         val placeholder = EnjinProfile().apply {
@@ -203,6 +219,7 @@ fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder
     })
 //    Database.insertProfileOrUpdateIfExists(profile)
     addToWaitingProfilesOrUpload(profile)
+    return profile.result != Result.EXCEPTION
 }
 
 fun testProxy(url: String, port: Int): Boolean {
@@ -293,12 +310,15 @@ fun getLastSeenTimestamp(timestamp: String): Long {
     // Last seen 3 days ago
     return if (timestamp.startsWith("Last seen")) {
         val stripped = timestamp.removePrefix("Last seen").trim()
+        if (stripped.equals("Just now", true)) {
+            return System.currentTimeMillis()
+        }
         // 3 days ago
         val split = stripped.split(" ")
         if (split[2] == "ago") {
             val amount = split[0].toLong()
             val unit = when {
-                split[1].startsWith("minute") -> ChronoUnit.MINUTES
+                split[1].startsWith("min") -> ChronoUnit.MINUTES
                 split[1].startsWith("hour") -> ChronoUnit.HOURS
                 split[1].startsWith("day") -> ChronoUnit.DAYS
                 split[1].startsWith("week") -> ChronoUnit.WEEKS
@@ -313,7 +333,7 @@ fun getLastSeenTimestamp(timestamp: String): Long {
             now.with(TemporalAdjusters.previous(lastDay!!))
                 .withHour(time[0])
                 .withMinute(time[1])
-                .toEpochSecond(ZoneOffset.UTC)
+                .toEpochSecond(ZoneOffset.UTC) * 1000
         } else {
             // Apr 20, 13
             val monthDay = MonthDay.parse(stripped, dateFormat)
