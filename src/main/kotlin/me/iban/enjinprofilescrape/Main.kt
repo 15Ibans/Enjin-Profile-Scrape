@@ -180,7 +180,7 @@ fun main(args: Array<String>) {
                 if (exceptionCounter >= 10) {
                     println("Thread $index got 10 exceptions in a row, sleeping for 30 minutes")
                     exceptionCounter = 0
-                    Thread.sleep(TimeUnit.MILLISECONDS.toMinutes(30))
+                    Thread.sleep(TimeUnit.MINUTES.toMillis(30))
                 }
             }
         }
