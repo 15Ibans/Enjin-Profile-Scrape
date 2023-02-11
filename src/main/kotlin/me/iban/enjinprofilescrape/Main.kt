@@ -2,13 +2,19 @@ package me.iban.enjinprofilescrape
 
 import org.jsoup.Jsoup
 import org.sqlite.SQLiteDataSource
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.sql.PreparedStatement
 import java.text.NumberFormat
 import java.time.*
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("MMM d, yy")
@@ -23,10 +29,25 @@ const val newestProfile = 21024144
 
 val lastProfile = AtomicInteger(-1)
 
+// honestly idk if this *has* to be atomic
+val lastUploadTime = AtomicLong(-1)
+const val DELAY = 1000 * 30L
+
+val queue = ConcurrentLinkedQueue<EnjinProfile>()
+
+var debug = false
+
+fun printlnOnDebug(str: String) {
+    if (debug) println(str)
+}
+
 fun main(args: Array<String>) {
     // -DstartProfile
     //proxies are in format 127.0.0.1:XXXXX,127.0.0.1:XXXXX,...
     // -Dproxies
+    debug = args.contains("debug")
+    printlnOnDebug("Running in debug mode!")
+
     val proxies = System.getProperty("proxies")?.split(",")?.toMutableSet() ?: mutableSetOf()
 
     // -DproxyRangeHost
@@ -61,7 +82,7 @@ fun main(args: Array<String>) {
 
 //    val profilesWithException = doSQL {
 //        val profiles = mutableListOf<Int>()
-//        val results = prepareStatement("SELECT ID FROM profiles WHERE RESULT = 'EXCEPTION'").executeQuery()
+//        val results = prepareStatement("SELECT ID FROM ${Database.TABLE_NAME} WHERE RESULT = 'EXCEPTION'").executeQuery()
 //        while (results.next()) {
 //            profiles.add(results.getInt(1))
 //        }
@@ -79,7 +100,7 @@ fun main(args: Array<String>) {
 
     val uncompletedProfiles = doSQL {
         val profiles = mutableListOf<Int>()
-        val results = prepareStatement("SELECT ID FROM profiles WHERE RESULT = 'PLACEHOLDER'").executeQuery()
+        val results = prepareStatement("SELECT ID FROM ${Database.TABLE_NAME} WHERE RESULT = 'PLACEHOLDER'").executeQuery()
         while (results.next()) {
             profiles.add(results.getInt(1))
         }
@@ -98,14 +119,19 @@ fun main(args: Array<String>) {
         run out@ {
             proxies.forEachIndexed { index, proxy ->
                 var valid = false
-                print("(${index + 1}/${proxies.size}) Testing proxy $proxy... ")
+                print("Testing proxy ${index + 1}/${proxies.size} $proxy... ")
                 val split = proxy.split(":")
                 if (split.size == 2) {
                     val url = split[0]
                     val port = split[1].toInt()
 
-                    if (testProxy(url, port)) {
-                        workingProxies.add(Proxy(url, port))
+                    val httpProxy = Proxy(Proxy.Type.HTTP, InetSocketAddress(url, port))
+                    val socksProxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress(url, port))
+                    if (testProxy(httpProxy)) {     // test http proxy first
+                        workingProxies.add(httpProxy)
+                        valid = true
+                    } else if (testProxy(socksProxy)) {
+                        workingProxies.add(socksProxy)
                         valid = true
                     }
                 }
@@ -126,10 +152,14 @@ fun main(args: Array<String>) {
         println("Running without proxies\n")
     }
 
+    lastUploadTime.set(System.currentTimeMillis())
+
     println("Latest profile is $mostRecentProfile, starting from ${mostRecentProfile + 1}")
     lastProfile.set(mostRecentProfile)
 
-    workingProxies.add(0, null) // the first one uses user's direct connection
+    if (System.getProperty("useDirect")?.toBoolean() == true) {
+        workingProxies.add(0, null) // the first one uses user's direct connection
+    }
 
     if (workingProxies.isNotEmpty() && Database.ds is SQLiteDataSource) {
         // for concurrent writers on SQLite
@@ -138,38 +168,88 @@ fun main(args: Array<String>) {
 
     workingProxies.forEachIndexed { index, proxy ->
         thread {
+            var exceptionCounter = 0    // if this reaches 10 (errors in a row), make the thread sleep for half an hour
             while (lastProfile.get() <= newestProfile) {
                 val id = lastProfile.getAndIncrement()
-                getProfileAndUploadToDB(profileId = id, proxy = proxy, usePlaceholder = true, prefix = "[THREAD $index]")
+                val isSuccessful = getProfileAndUploadToDB(profileId = id, proxy = proxy, usePlaceholder = true, prefix = "[THREAD $index]")
+                if (isSuccessful) {
+                    exceptionCounter = 0
+                } else {
+                    exceptionCounter++
+                }
+                if (exceptionCounter >= 10) {
+                    println("Thread $index got 10 exceptions in a row, sleeping for 30 minutes")
+                    exceptionCounter = 0
+                    Thread.sleep(TimeUnit.MILLISECONDS.toMinutes(30))
+                }
             }
         }
     }
 }
 
-fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder: Boolean = true, prefix: String? = null) {
+
+fun addToWaitingProfilesOrUpload(profile: EnjinProfile, forceUpload: Boolean = false) {
+    queue.add(profile)
+    val time = System.currentTimeMillis()
+    if (forceUpload || System.currentTimeMillis() >= lastUploadTime.get() + DELAY) {
+        lastUploadTime.set(time)
+        val toProcess = queue.toTypedArray()
+        queue.clear()
+        var statement: PreparedStatement? = null
+        doSQL {
+            autoCommit = false
+            toProcess.forEach { profile ->
+                statement = Database.insertProfileOrUpdateIfExists(profile, this, statement)
+            }
+            statement?.let {
+                it.executeBatch()
+                commit()
+                val amount = toProcess.distinctBy { profile -> profile.id }.size
+                println(buildString {
+                    append("Saved $amount different profiles")
+                    if (amount > 0) {
+                        val min = toProcess.minOf { profile -> profile.id }
+                        val max = toProcess.maxOf { profile -> profile.id }
+                        append(" ($min -> $max)")
+                    }
+                })
+            }
+        }
+    }
+}
+
+/**
+ * Retrieves information for an Enjin profile and places it in a queue to be placed in the database
+ *
+ * @return Whether the result was successful (no exceptions generated)
+ */
+fun getProfileAndUploadToDB(profileId: Int, proxy: Proxy? = null, usePlaceholder: Boolean = true, prefix: String? = null): Boolean {
     if (usePlaceholder) {
         // mechanism to go back if scrape was unfinished?
         val placeholder = EnjinProfile().apply {
             id = profileId
             result = Result.PLACEHOLDER
         }
-        Database.insertProfileOrUpdateIfExists(placeholder)
+//        Database.insertProfileOrUpdateIfExists(placeholder)
+        addToWaitingProfilesOrUpload(placeholder)
     }
 
     val profile = getEnjinProfile(profileId, proxy)
-    println(buildString {
+    printlnOnDebug(buildString {
         if (prefix != null) {
             append("$prefix \t")
         }
         append("Got profile ${profile.id}, result is ${profile.result.name}")
     })
-    Database.insertProfileOrUpdateIfExists(profile)
+//    Database.insertProfileOrUpdateIfExists(profile)
+    addToWaitingProfilesOrUpload(profile)
+    return profile.result != Result.EXCEPTION
 }
 
-fun testProxy(url: String, port: Int): Boolean {
+fun testProxy(proxy: Proxy): Boolean {
     return try {
         Jsoup.connect("http://minecade.com/profile/1")
-            .proxy(url, port)
+            .proxy(proxy)
             .get()
         true
     } catch (e: Exception) {
@@ -185,7 +265,7 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
             Jsoup.connect("http://minecade.com/profile/$profileId/info")
                 .apply {
                     if (proxy != null) {
-                        proxy(proxy.url, proxy.port)
+                        this.proxy(proxy)
                     }
                 }
                 .get()
@@ -205,19 +285,22 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
 
         val cells = doc.select("div.cell")
         val profileViewCells = cells.first() ?: return@enjinProfile
-        val cleaned = profileViewCells.html().cleanHtml()
+        val cleaned = profileViewCells.text().cleanHtml()
         profileViews = NumberFormat.getNumberInstance(Locale.US).parse(cleaned).toInt()
 
-        displayName = doc.select("span.cover_header_name_text").first()?.html()
-        quote = doc.select("span.cover_header_quote_text").first()?.html()
-        val lastSeen = doc.select("div.cover_header_online").first()?.html()
+        displayName = doc.select("span.cover_header_name_text").first()?.text()
+        quote = doc.select("input.cover_header_quote_input").first()?.attr("value")?.take(255)
+        if (quote?.isEmpty() == true) {
+            quote = doc.select("span.cover_header_quote_text").first()?.text() ?: quote
+        }
+        val lastSeen = doc.select("div.cover_header_online").first()?.text()
         this.lastSeen = lastSeen?.let { getLastSeenTimestamp(it) } ?: this.lastSeen
 
         friends =
-            doc.select("a.friends_popup_button").first()?.html()?.trim()
+            doc.select("a.friends_popup_button").first()?.text()?.trim()
                 ?.split(" ")?.getOrNull(0)?.toIntOrNull() ?: friends
 
-        val joinDateStr = doc.select("div.info_data_value").getOrNull(6)?.html()?.trim()
+        val joinDateStr = doc.select("div.info_data_value").getOrNull(6)?.text()?.trim()
         if (joinDateStr != null) {
             val monthDay = MonthDay.parse(joinDateStr, joinDateFormat)
             val year = Year.parse(joinDateStr, joinDateFormat)
@@ -225,7 +308,7 @@ fun getEnjinProfile(profileId: Int, proxy: Proxy? = null): EnjinProfile {
             joinDate = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
         }
 
-        bio = doc.select("div.info_data_about_text_full").first()?.html()?.take(65535)
+        bio = doc.select("div.info_data_about_text_full").first()?.text()?.take(65535)
 
         // also matches names with more than one _, however it's impossible for a custom url to just show two underscores
         // and if it does, well that's an interesting case
@@ -251,12 +334,15 @@ fun getLastSeenTimestamp(timestamp: String): Long {
     // Last seen 3 days ago
     return if (timestamp.startsWith("Last seen")) {
         val stripped = timestamp.removePrefix("Last seen").trim()
+        if (stripped.equals("Just now", true)) {
+            return System.currentTimeMillis()
+        }
         // 3 days ago
         val split = stripped.split(" ")
         if (split[2] == "ago") {
             val amount = split[0].toLong()
             val unit = when {
-                split[1].startsWith("minute") -> ChronoUnit.MINUTES
+                split[1].startsWith("min") -> ChronoUnit.MINUTES
                 split[1].startsWith("hour") -> ChronoUnit.HOURS
                 split[1].startsWith("day") -> ChronoUnit.DAYS
                 split[1].startsWith("week") -> ChronoUnit.WEEKS
@@ -271,7 +357,7 @@ fun getLastSeenTimestamp(timestamp: String): Long {
             now.with(TemporalAdjusters.previous(lastDay!!))
                 .withHour(time[0])
                 .withMinute(time[1])
-                .toEpochSecond(ZoneOffset.UTC)
+                .toEpochSecond(ZoneOffset.UTC) * 1000
         } else {
             // Apr 20, 13
             val monthDay = MonthDay.parse(stripped, dateFormat)
@@ -311,5 +397,3 @@ enum class Result {
     PLACEHOLDER,
     OTHER;
 }
-
-data class Proxy(val url: String, val port: Int)
